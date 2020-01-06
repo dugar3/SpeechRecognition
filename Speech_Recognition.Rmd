@@ -1,0 +1,1219 @@
+---
+title: Utilizing High Energy Ridges for Feature Engineering Convolutional Neural Networks
+  for Voice Recognition (Work in Progress)
+author: "Ajay Dugar"
+date: "June 19, 2019"
+output:
+  html_document: default
+  latex_engine: default
+  pdf_document: default
+---
+
+
+## Abstract
+
+In this paper, we seek to determine if feature engineering is a valid method to recognizing discrete speech word sets, specifically pre-labeled words. Using a Convolutional Neural Network to categorize the modified flattened spectrograms,
+
+# Introduction
+
+The purpose of this project is to determine whether the use of feature engineering in convolutional neural networks, namely the pre-processing of vocal spectrograms by the extraction of maximum-energy ridges from a time-frequency matrix using a penalized forward-backward greedy algorithm, can significantly improve the performance of a voice recognition classifier. The model is a closed-vocabulary (categorizing from a set of listed words), speaker independent (no training required to match a speaker’s vocal idiosyncrasies) model. We have $31$ labels: $(l_1,l_2,…,l_{30})$ for the words in the data set. The specific words are given in the Appendix. The data is given from the [TensorFlow Speech Recognition Challenge](https://www.kaggle.com/c/tensorflow-speech-recognition-challenge), with the link given in the Appendix.
+
+# Analysis
+
+The recordings given are 1 second long with a sample rate of 16 kHz. However, since these recordings have noise at the front and back of the spoken words, there is a need to trim, interpolate, and normalize the recordings. This will be done in the following manner:
+
+Let $x[n]$ represent the original signal. Trimming gives us: 
+
+$$x[n]_{trim}=argmin_ia(|x[i]| \geq 0.1*maxa(|x[n]|)),argmax_ja(|x[j]| \geq 0.1*maxa(|x[n]|)))$$
+Giving us the continuous portion of the untrimmed signal that starts and ends with a amplitude 0.1 times the maximum amplitude of the signal.Next, linear interpolation of the signal is done, where $x[n]_{trim}$ is stretched to a full second in length, where the signal at $\frac{1}{16000} s$ intervals are given by:
+
+$$x[n]_{intrpl}=x[n_0]_{trim}+\frac{(x[n_1]_{trim}-x[n_0 ]_{trim})}{(n_1-n_0)}(n-n_0)$$
+After these steps, the waveform looks like this:
+
+![Waveform of the interpolated signal](C:/Users\\Meera Dugar\Desktop\Research\Speech\waveform.png)
+
+Finally, normalization of the recordings is done by dividing by the maximum amplitude of the interpolated signal:
+
+$$x[n]_{final}=\frac{(x[n]_{intrpl})}{maxa(|x[n]_{intrpl}|)}$$
+Moving forward, $x[n]$ will refer to $x[n]_{final}$ to avoid extraneous notation.
+
+The next step is to extract additional information from the recording, which will be done by generating spectrograms of the signals, giving a 3-dimensional tensor with amplitude ($dB$), frequency ($Hz$), and time ($s$).
+
+A portion of the signal (after demeaning where $x[n]=x[n]-\langle x[n] \rangle$), $x[n]$, can be represented as:
+
+$$x[n]=a_0+\sum_{j=-\frac{(N-1)}{2}}^{\frac{(N-1)}{2}} [a_j  cosa(2\pi n j/N)+  b_j sina(2 \pi n j/N)] $$
+Where the coefficients $a_j$ and $b_j$ are estimated from waveform, and $N$ is the window length of the portion of the signal. For the raw recordings from the .wav files, we have $f=16 \space kHz$, with the total time of the signal as $1s$. In order to generate the spectrograms, we use a discrete-time short-time Fourier transform (DT STFT), where the general form is:
+
+$$F[x[n]](m,\omega)=X(m,\omega)=\sum_{n=1}^{N} x[n]  w[n-m] e^{-j \omega n}$$
+
+with $w[n]$ being the windowing function. Specifically, for the spectrogram of each of the words, we have the following values:
+
+$$overlap: m=80$$
+$$Hanning \space window \space function: w[n]=0.5(1-cos(\frac{2\pi n}{N}) )=sin^2(\pi n/N)$$
+
+$$Window \space length:N=160$$
+
+With spectrograms relating to speech, there are a number of factors that must be taken into account. Choosing the window length affects the resolution, with a wider window corresponding to harmonic details, while narrower windows corresponds to formant structures. For speech, the step size (window minus overlap) should be between $1$ and $5 \space ms$ (here it is $5 \space ms$). Next, the phase information is disregarded and energy is normalized, by
+
+$$S=\frac{|S|}{maxa(|S|)}$$
+
+The spectrogram that is plotted is based on the magnitude of the DT STFT, $spectrogram(t,ω)=|STFT(t,ω)|$, as we are disregarding the phase information of the DT STFT. Additionally, we will normalize the power of the spectrogram, with the maximum power of $-3 \space dB$ and minimum power of $-40 \space dB$. Additionally, the maximum frequency that is shown is the Nyquist frequency ($8 \space kHz$), which corresponds to:
+
+$$f_{Nyquist}=\frac{f_{sampling}}{2}$$
+
+However, based on the data and for the sake of computational time, the truncation will occur at $4 \space kHz$. The spectrogram of the waveform above was computed, giving:
+
+![Example of a cleaned spectrogram](C:/Users\\Meera Dugar\Desktop\Research\Speech\Spectrogram.png)
+
+
+For generating the maximum energy ridges, the penalized forward-backward greedy algorithm used is as follows:
+
+(1) Given the spectrogram matrix, $M$,  of dimensions $I$ by $J$, calculate the updated value for each cell, $M_{i,j}$ where $1 \leq i \leq I , 2 \leq j \leq J$, generalized to:
+
+$$M_{i,j(new)} = M_{i,j(old)}+min(\alpha * ||M_{i,j(old)}-M_{,j-1}||_p)$$
+
+Where $\alpha$ is the cost constant and $||M_{i,j(old)}-M_{,j-1}||_p$ is the p-norm, specifically:
+
+$$||M_{i,j(old)}-M_{k,j-1}||_p=|k-i|^p$$
+
+(2)	Starting from the last column, take the minimum value and connect it to the element in the previous column which give it it’s value, such that:
+
+$$ridge_{k,j-1}=argmin_{ridge_{(i,j)}}a(\alpha *||ridge_{i,j(old)}-M_{k,j-1}||_p)$$
+
+(3) For multiple ridges, say $n$ ridges, we take the lowest $n$ values in the last column, and repeat step 2, with the condition that the ridges are not overlapping for any column.
+
+Next, the sequential neural network is created. The structure of the neural network is 3-fold. First is the input layer, where we input the flattened tensor, with the number of neurons being equal to the number of cells in the tensor of the spectrogram, which in this case is $198*40 = 7920$. Finally, since neural network involves
+
+For the training of the model, batch gradient descent will be used, where the batch size is equal to the size of the training set. 
+
+For the classification, 
+
+The optimizer for the network used is $RMS_{prop}$:
+
+$$E[g^2]_t=\beta E[g^2 ]_{t-1}+(1-\beta) (\frac{\partial C}{\partial w})^2$$
+
+$$w_t=w_{t-1}-\frac{\eta}{\sqrt{E[g^2 ]_t}} \frac{\partial C}{ \partial w}$$
+
+Where $E[g^2]$ is the expected value of the square of the gradient, $\beta$ is the $MA(1)$ parameter with respect to the dependence of the gradient, $\frac{\partial C}{\partial w}$ is the first derivative of the gradient with respect to the weight, and $\eta$ is the learning rate.
+
+The loss function used is categorical cross-entropy where
+
+$$loss=-\sum_{c=1}^{M} 1_{(obs,M)} (c) loga(p_{obs,c} )$$
+And $1_{obs,M} (c)$ is the indicator function whether or not the classification of the observation is correct, $M$ is the number of classes, and $p$ is the predicted probability that the observation is of class $c$.
+
+# Evaluation of Models
+
+```{r, echo=FALSE, message=F}
+#Needed
+
+library(reticulate)
+
+#install.packages("keras", type = "source")
+
+library(tensorflow)
+#install_tensorflow()
+# activate r-reticulate
+library(dplyr)
+library(keras)
+library(stats)
+library(tuneR)
+library(signal)
+library(seewave)
+#library(oce)
+library(rgl)
+library(deSolve)
+library(scatterplot3d)
+library(magrittr)
+library(h2o)
+```
+
+```{r, echo = F}
+training_list = readLines(file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "testing_list.txt"))
+
+bed_train = grep("^bed", training_list, value = TRUE)
+bird_train = grep("^bird", training_list, value = TRUE)
+cat_train = grep("^cat", training_list, value = TRUE)
+dog_train = grep("^dog", training_list, value = TRUE)
+down_train = grep("^down", training_list, value = TRUE)
+eight_train = grep("^eight", training_list, value = TRUE)
+five_train = grep("^five", training_list, value = TRUE)
+four_train = grep("^four", training_list, value = TRUE)
+go_train = grep("^go", training_list, value = TRUE)
+happy_train = grep("^happy", training_list, value = TRUE)
+house_train = grep("^house", training_list, value = TRUE)
+left_train = grep("^left", training_list, value = TRUE)
+marvin_train = grep("^marvin", training_list, value = TRUE)
+nine_train = grep("^nine", training_list, value = TRUE)
+no_train = grep("^no", training_list, value = TRUE)
+off_train = grep("^off", training_list, value = TRUE)
+on_train = grep("^on", training_list, value = TRUE)
+one_train = grep("^one", training_list, value = TRUE)
+right_train = grep("^right", training_list, value = TRUE)
+seven_train = grep("^seven", training_list, value = TRUE)
+sheila_train = grep("^sheila", training_list, value = TRUE)
+six_train = grep("^six", training_list, value = TRUE)
+stop_train = grep("^stop", training_list, value = TRUE)
+three_train = grep("^three", training_list, value = TRUE)
+tree_train = grep("^tree", training_list, value = TRUE)
+two_train = grep("^two", training_list, value = TRUE)
+up_train = grep("^up", training_list, value = TRUE)
+wow_train = grep("^wow", training_list, value = TRUE)
+yes_train = grep("^yes", training_list, value = TRUE)
+zero_train = grep("^zero", training_list, value = TRUE)
+
+train_words = c(bed_train,bird_train, cat_train, dog_train, down_train, eight_train, five_train, four_train, go_train, happy_train, house_train, left_train, marvin_train, nine_train, no_train, off_train, on_train,one_train  ,right_train,seven_train, sheila_train,six_train,stop_train, three_train, tree_train, two_train,up_train,wow_train,yes_train, zero_train)
+
+train_labels = c(rep(1, length(bed_train)), rep(2, length(bird_train)), rep(3, length(cat_train)), rep(4, length(dog_train)), rep(5, length(down_train)), rep(6, length(eight_train)), rep(7, length(five_train)), rep(8, length(four_train)), rep(9, length(go_train)), rep(10, length(happy_train)), rep(11, length(house_train)), rep(12, length(left_train)), rep(13, length(marvin_train)), rep(14, length(nine_train)), rep(15, length(no_train)), rep(16, length(off_train)), rep(17, length(on_train)), rep(18, length(one_train)), rep(19, length(right_train)), rep(20, length(seven_train)), rep(21, length(sheila_train)), rep(22, length(six_train)), rep(23, length(stop_train)), rep(24, length(three_train)), rep(25, length(tree_train)), rep(26, length(two_train)), rep(27, length(up_train)), rep(28, length(wow_train)), rep(29, length(yes_train)), rep(30, length(zero_train)))
+
+train_data = array(dim = c(7083, 198, 40))
+train_data2 = array(dim = c(7083, 198, 40))
+
+validation_list = readLines(file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "validation_list.txt"))
+
+bed_validation = grep("^bed", validation_list, value = TRUE)
+bird_validation = grep("^bird", validation_list, value = TRUE)
+cat_validation = grep("^cat", validation_list, value = TRUE)
+dog_validation = grep("^dog", validation_list, value = TRUE)
+down_validation = grep("^down", validation_list, value = TRUE)
+eight_validation = grep("^eight", validation_list, value = TRUE)
+five_validation = grep("^five", validation_list, value = TRUE)
+four_validation = grep("^four", validation_list, value = TRUE)
+go_validation = grep("^go", validation_list, value = TRUE)
+happy_validation = grep("^happy", validation_list, value = TRUE)
+house_validation = grep("^house", validation_list, value = TRUE)
+left_validation = grep("^left", validation_list, value = TRUE)
+marvin_validation = grep("^marvin", validation_list, value = TRUE)
+nine_validation = grep("^nine", validation_list, value = TRUE)
+no_validation = grep("^no", validation_list, value = TRUE)
+off_validation = grep("^off", validation_list, value = TRUE)
+on_validation = grep("^on", validation_list, value = TRUE)
+one_validation = grep("^one", validation_list, value = TRUE)
+right_validation = grep("^right", validation_list, value = TRUE)
+seven_validation = grep("^seven", validation_list, value = TRUE)
+sheila_validation = grep("^sheila", validation_list, value = TRUE)
+six_validation = grep("^six", validation_list, value = TRUE)
+stop_validation = grep("^stop", validation_list, value = TRUE)
+three_validation = grep("^three", validation_list, value = TRUE)
+tree_validation = grep("^tree", validation_list, value = TRUE)
+two_validation = grep("^two", validation_list, value = TRUE)
+up_validation = grep("^up", validation_list, value = TRUE)
+wow_validation = grep("^wow", validation_list, value = TRUE)
+yes_validation = grep("^yes", validation_list, value = TRUE)
+zero_validation = grep("^zero", validation_list, value = TRUE)
+
+validation_words = c(bed_validation,bird_validation, cat_validation, dog_validation, down_validation, eight_validation, five_validation, four_validation, go_validation, happy_validation, house_validation, left_validation, marvin_validation, nine_validation, no_validation, off_validation, on_validation,one_validation  ,right_validation,seven_validation, sheila_validation,six_validation,stop_validation, three_validation, tree_validation, two_validation,up_validation,wow_validation,yes_validation, zero_validation)
+
+validation_labels = c(rep(1, length(bed_validation)), rep(2, length(bird_validation)), rep(3, length(cat_validation)), rep(4, length(dog_validation)), rep(5, length(down_validation)), rep(6, length(eight_validation)), rep(7, length(five_validation)), rep(8, length(four_validation)), rep(9, length(go_validation)), rep(10, length(happy_validation)), rep(11, length(house_validation)), rep(12, length(left_validation)), rep(13, length(marvin_validation)), rep(14, length(nine_validation)), rep(15, length(no_validation)), rep(16, length(off_validation)), rep(17, length(on_validation)), rep(18, length(one_validation)), rep(19, length(right_validation)), rep(20, length(seven_validation)), rep(21, length(sheila_validation)), rep(22, length(six_validation)), rep(23, length(stop_validation)), rep(24, length(three_validation)), rep(25, length(tree_validation)), rep(26, length(two_validation)), rep(27, length(up_validation)), rep(28, length(wow_validation)), rep(29, length(yes_validation)), rep(30, length(zero_validation)))
+
+validation_data = array(dim = c(7028, 198, 40))
+validation_data2 = array(dim = c(7028, 198, 40))
+```
+
+
+```{r, echo = F}
+# Code to generate spectrographs
+snd = rep(0, 16000)
+for (i in bed_train){
+  fin = file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "audio", i)
+  # read in audio file
+
+  data = readWave(fin)
+  #data = data + temp
+
+  # extract signal
+  temp = data@left
+
+  snd = snd + temp
+
+}
+
+# determine duration
+dur = length(snd)/data@samp.rate
+
+# determine sample rate
+fs = data@samp.rate
+
+start = which(snd > 0.1)[1]
+end = length(snd) - which(rev(snd) > 0.1)[1]
+
+snd = snd[start:end]
+  
+t = seq(1,16000, length.out = length(snd)) #upsampling
+f <- approxfun(t, snd)
+snd = f(seq(1,16000,1))
+
+# demean to remove offset
+snd = snd - mean(snd)
+
+# plot waveform
+plot(snd, type = 'l', xlab = 'Samples', ylab = 'Amplitude')
+
+# number of points to use for the fft
+nfft=160
+
+# window size (in points)
+window=160
+
+# overlap (in points)
+overlap=80
+
+# create spectrogram
+spec = specgram(x = snd,
+                n = nfft,
+                Fs = fs,
+                window = window,
+                overlap = overlap
+)
+
+
+# discard phase information
+S = abs(spec$S)
+
+# normalize
+S = S/max(S)
+
+# convert to dB
+S = 20*log10(S)
+
+# clip below -40 dB
+S[S < -40] <- -40
+
+# clip above -3 dB
+S[S > -3] <- -3      
+
+# config time axis
+t = spec$t
+
+# plot spectrogram
+# imagep(x = spec$t,
+#        y = spec$f[1:40],
+#        z = t(S)[,1:40],
+#        col = oce.colorsViridis,
+#        ylab = 'Frequency [Hz]',
+#        xlab = 'Time [s]',
+#        drawPalette = T,
+#        decimate = F
+# )
+```
+
+```{r, echo = F}
+### Penalized spectrograms
+
+tfridge1 <- function(freqtimemat, ridges = 1, cost = 2, distmetric = 2){
+    
+  ridgepos = freqtimemat
+  columns = 1:ncol(freqtimemat)
+  rows = matrix(data = 0, nrow = ridges, ncol = ncol(freqtimemat))
+  
+  for (i in 2:ncol(freqtimemat)){
+    for (j in 1:nrow(freqtimemat)){
+      values = c()
+      for (k in 1:nrow(freqtimemat)){
+        values = c(values, freqtimemat[k, i-1] + cost*((abs(j-k)^distmetric)))
+      }
+      freqtimemat[j, i] = min(values) + freqtimemat[j, i]
+      ridgepos[j, i] = which.min(values)
+    }
+  }
+  
+  colnames(freqtimemat) <- NULL
+  return(freqtimemat)
+}
+```
+
+```{r, echo = F}
+### extraction of maximum-energy ridge using a penalized forward-backward greedy algorithm
+
+tfridge2 <- function(freqtimemat, ridges = 1, cost = 2, distmetric = 2){
+    
+  ridgepos = freqtimemat
+  columns = 1:ncol(freqtimemat)
+  rows = matrix(data = 0, nrow = ridges, ncol = ncol(freqtimemat))
+  
+  for (i in 2:ncol(freqtimemat)){
+    for (j in 1:nrow(freqtimemat)){
+      values = c()
+      for (k in 1:nrow(freqtimemat)){
+        values = c(values, freqtimemat[k, i-1] + cost*((abs(j-k)^distmetric)))
+      }
+      freqtimemat[j, i] = min(values) + freqtimemat[j, i]
+      ridgepos[j, i] = which.min(values)
+    }
+  }
+  
+  
+  for (i in 1:ridges){
+    start_ridges = sort(which(freqtimemat[,ncol(freqtimemat)]==min(ncol(freqtimemat))), decreasing = T)[1:i]
+    
+  }
+  
+  
+  # for (i in 1:ridges){
+  #   rows[i, ncol(freqtimemat)] = which(freqtimemat[,ncol(freqtimemat)] == sort(freqtimemat[,ncol(freqtimemat)])[i])[1]
+  # }
+  # 
+  # for (i in 1:(ncol(freqtimemat)-1)){
+  #    for (j in 1:ridges){
+  #       
+  #       backtrack_val = ridgepos[rows[j, ncol(freqtimemat) - i + 1], ncol(freqtimemat) - i]
+  #       
+  #       if (j > 2){
+  #         
+  #       #if(backtrack_val == rows[j-1, ncol(freqtimemat) - i]){
+  #       if(backtrack_val %in% rows[, ncol(freqtimemat) - i]){
+  #         rows[j, ncol(freqtimemat) - i] = rows[j, ncol(freqtimemat) - i + 1]
+  #         
+  #       }
+  #       
+  #       else{
+  #         rows[j, ncol(freqtimemat) - i] = backtrack_val
+  #       }
+  #     }
+  #       # rows[j, ncol(freqtimemat) - i] = ridgepos[rows[j, ncol(freqtimemat) - i + 1], ncol(freqtimemat) - i]
+  #    }
+  #  }
+  # 
+  freqtimemat2 = matrix(data = 0, ncol = ncol(freqtimemat), nrow = nrow(freqtimemat))
+  # 
+  #  for (i in 1:ncol(freqtimemat)) {
+  #    for (j in 1:ridges){
+  #       freqtimemat2[rows[j,i], columns[i]] = freqtimemat[rows[j,i], columns[i]] + 1
+  #    }
+  # }
+  colnames(ridgepos) <- NULL
+  return(ridgepos)
+  # return(rows)
+}
+```
+
+
+```{r, echo = F, eval = F}
+for (i in 1:length(train_words)){ 
+  fin = file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "audio", train_words[i])
+  
+  # read in audio file
+  data = readWave(fin)
+  # extract signal
+  snd = data@left
+  # determine sample rate
+  fs = data@samp.rate
+  # demean to remove DC offset
+  snd = (snd - mean(snd))
+
+  
+  snd = snd/max(snd)
+  
+  start = which(snd > 0.1)[1]
+  end = length(snd) - which(rev(snd) > 0.1)[1]
+
+  snd = snd[start:end]
+  
+  t = seq(1,16000, length.out = length(snd)) #upsampling
+  f <- approxfun(t, snd)
+  snd = f(seq(1,16000,1))
+  
+# number of points to use for the fft
+nfft=160
+
+# window size (in points)
+window=160
+
+# overlap (in points)
+overlap=80
+
+# create spectrogram
+spec = specgram(x = snd,
+                n = nfft,
+                Fs = fs,
+                window = window,
+                overlap = overlap
+)
+
+
+# discard phase information
+S = abs(spec$S)
+
+# normalize
+S = S/max(S)
+
+# convert to dB
+S = 20*log10(S)
+
+# clip below -40 dB
+S[S < -40] <- -40
+
+# clip above -3 dB
+S[S > -3] <- -3      
+
+S = (S+40)/37
+
+# config time axis
+t = spec$t
+
+train_data[i,,] = t(S)[,1:40]
+}
+```
+
+```{r, eval = F, echo =F}
+
+for (i in 1:length(validation_words)){ 
+  fin = file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "audio", validation_words[i])
+  
+  # read in audio file
+  data = readWave(fin)
+  # extract signal
+  snd = data@left
+  # determine sample rate
+  fs = data@samp.rate
+  # demean to remove DC offset
+  snd = (snd - mean(snd))
+
+  
+  snd = snd/max(snd)
+  
+  start = which(snd > 0.1)[1]
+  end = length(snd) - which(rev(snd) > 0.1)[1]
+
+  snd = snd[start:end]
+  
+  t = seq(1,16000, length.out = length(snd)) #upsampling
+  f <- approxfun(t, snd)
+  snd = f(seq(1,16000,1))
+  
+# number of points to use for the fft
+nfft=160
+
+# window size (in points)
+window=160
+
+# overlap (in points)
+overlap=80
+
+# create spectrogram
+spec = specgram(x = snd,
+                n = nfft,
+                Fs = fs,
+                window = window,
+                overlap = overlap
+)
+
+
+# discard phase information
+S = abs(spec$S)
+
+# normalize
+S = S/max(S)
+
+# convert to dB
+S = 20*log10(S)
+
+# clip below -40 dB
+S[S < -40] <- -40
+
+# clip above -3 dB
+S[S > -3] <- -3      
+
+S = (S+40)/37
+
+
+# config time axis
+t = spec$t
+
+validation_data[i,,] = t(S)[,1:40]
+}
+
+```
+
+```{r, eval = F, echo = F}
+for (i in 1:length(train_words)){
+  train_data2[i,,] = tfridge(train_data[i,,], ridges = 1, cost = 2, distmetric = 2)
+}
+for (i in 1:length(validation_words)){
+  validation_data2[i,,] = tfridge(validation_data[i,,], ridges = 1, cost = 2, distmetric = 2)  
+}
+
+```
+
+
+```{r,eval = F, echo = F}
+network <- keras_model_sequential() %>% 
+  layer_dense(units = 198*40, activation = "relu", input_shape = c(198*40)) %>%
+  layer_dense(units = 1024, activation = "relu") %>%
+  layer_dense(units = 512, activation = "relu") %>%
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dense(units = 31, activation = "softmax")
+```
+
+```{r, eval = F, echo = F}
+network %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+```{r, eval = F, echo= F}
+train_data_new <- array_reshape(train_data, c(7083, 198*40))
+train_labels_new = to_categorical(train_labels)
+validation_data_new <- array_reshape(validation_data, c(7028, 198*40))
+validation_labels_new = to_categorical(validation_labels)
+```
+
+```{r, eval = F, message=F, echo = F}
+history <- network %>% fit(
+  train_data_new,
+  train_labels_new,
+  epochs = 500,
+  batch_size = 7083,
+  validation_data = list(validation_data_new, validation_labels_new)
+)
+```
+
+```{r, eval = F, echo = F}
+history2 <- network %>% fit(
+  train_data_new2,
+  train_labels_new2,
+  epochs = 500,
+  batch_size = 7083,
+  validation_data = list(validation_data_new2, validation_labels_new2)
+)
+```
+
+## Spectrograms with ridges = 0
+
+```{r, eval = F, echo = F}
+plot(history)
+```
+
+![No Ridge Data Model](C:/Users\\Meera Dugar\Desktop\Research\Speech\no_ridge_model.png)
+
+Here we see that the accuracy of the validation data levels off at roughly the 55% accuracy. 
+
+#Appendix
+
+Here is the link to the TensorFlow Speech Recognition Challenge: https://www.kaggle.com/c/tensorflow-speech-recognition-challenge
+
+The labels (l_1,l_2,…l_31) are the words: bed, bird, cat, dog, down, eight, five, four, go, happy, house, left, marvin, nine, no, off, on, one, right, seven, Sheila, six, stop, three, tree, two, up, wow, yes, zero, and ‘none of the above’
+
+Description from the Kaggle competition:
+
+But, for independent makers and entrepreneurs, it’s hard to build a simple speech detector using free, open data and code. Many voice recognition datasets require preprocessing before a neural network model can be built on them. To help with this, TensorFlow recently released the Speech Commands Datasets. It includes 65,000 one-second long utterances of 30 short words, by thousands of different people.
+In this competition, you're challenged to use the Speech Commands Dataset to build an algorithm that understands simple spoken commands. By improving the recognition accuracy of open-sourced voice interface tools, we can improve product effectiveness and their accessibility.
+
+
+## Code
+
+The code is below for reproducibility:
+
+```{r, echo=FALSE, message=F, eval =F}
+#Needed
+
+library(reticulate)
+
+#install.packages("keras", type = "source")
+
+library(tensorflow)
+#install_tensorflow()
+# activate r-reticulate
+library(dplyr)
+library(keras)
+library(stats)
+library(tuneR)
+library(signal)
+library(seewave)
+#library(oce)
+library(rgl)
+library(deSolve)
+library(scatterplot3d)
+library(magrittr)
+library(h2o)
+```
+
+```{r, echo = T, eval = F}
+training_list = readLines(file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "testing_list.txt"))
+
+bed_train = grep("^bed", training_list, value = TRUE)
+bird_train = grep("^bird", training_list, value = TRUE)
+cat_train = grep("^cat", training_list, value = TRUE)
+dog_train = grep("^dog", training_list, value = TRUE)
+down_train = grep("^down", training_list, value = TRUE)
+eight_train = grep("^eight", training_list, value = TRUE)
+five_train = grep("^five", training_list, value = TRUE)
+four_train = grep("^four", training_list, value = TRUE)
+go_train = grep("^go", training_list, value = TRUE)
+happy_train = grep("^happy", training_list, value = TRUE)
+house_train = grep("^house", training_list, value = TRUE)
+left_train = grep("^left", training_list, value = TRUE)
+marvin_train = grep("^marvin", training_list, value = TRUE)
+nine_train = grep("^nine", training_list, value = TRUE)
+no_train = grep("^no", training_list, value = TRUE)
+off_train = grep("^off", training_list, value = TRUE)
+on_train = grep("^on", training_list, value = TRUE)
+one_train = grep("^one", training_list, value = TRUE)
+right_train = grep("^right", training_list, value = TRUE)
+seven_train = grep("^seven", training_list, value = TRUE)
+sheila_train = grep("^sheila", training_list, value = TRUE)
+six_train = grep("^six", training_list, value = TRUE)
+stop_train = grep("^stop", training_list, value = TRUE)
+three_train = grep("^three", training_list, value = TRUE)
+tree_train = grep("^tree", training_list, value = TRUE)
+two_train = grep("^two", training_list, value = TRUE)
+up_train = grep("^up", training_list, value = TRUE)
+wow_train = grep("^wow", training_list, value = TRUE)
+yes_train = grep("^yes", training_list, value = TRUE)
+zero_train = grep("^zero", training_list, value = TRUE)
+
+train_words = c(bed_train,bird_train, cat_train, dog_train, down_train, eight_train, five_train, four_train, go_train, happy_train, house_train, left_train, marvin_train, nine_train, no_train, off_train, on_train,one_train  ,right_train,seven_train, sheila_train,six_train,stop_train, three_train, tree_train, two_train,up_train,wow_train,yes_train, zero_train)
+
+train_labels = c(rep(1, length(bed_train)), rep(2, length(bird_train)), rep(3, length(cat_train)), rep(4, length(dog_train)), rep(5, length(down_train)), rep(6, length(eight_train)), rep(7, length(five_train)), rep(8, length(four_train)), rep(9, length(go_train)), rep(10, length(happy_train)), rep(11, length(house_train)), rep(12, length(left_train)), rep(13, length(marvin_train)), rep(14, length(nine_train)), rep(15, length(no_train)), rep(16, length(off_train)), rep(17, length(on_train)), rep(18, length(one_train)), rep(19, length(right_train)), rep(20, length(seven_train)), rep(21, length(sheila_train)), rep(22, length(six_train)), rep(23, length(stop_train)), rep(24, length(three_train)), rep(25, length(tree_train)), rep(26, length(two_train)), rep(27, length(up_train)), rep(28, length(wow_train)), rep(29, length(yes_train)), rep(30, length(zero_train)))
+
+train_data = array(dim = c(7083, 198, 40))
+train_data2 = array(dim = c(7083, 198, 40))
+
+validation_list = readLines(file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "validation_list.txt"))
+
+bed_validation = grep("^bed", validation_list, value = TRUE)
+bird_validation = grep("^bird", validation_list, value = TRUE)
+cat_validation = grep("^cat", validation_list, value = TRUE)
+dog_validation = grep("^dog", validation_list, value = TRUE)
+down_validation = grep("^down", validation_list, value = TRUE)
+eight_validation = grep("^eight", validation_list, value = TRUE)
+five_validation = grep("^five", validation_list, value = TRUE)
+four_validation = grep("^four", validation_list, value = TRUE)
+go_validation = grep("^go", validation_list, value = TRUE)
+happy_validation = grep("^happy", validation_list, value = TRUE)
+house_validation = grep("^house", validation_list, value = TRUE)
+left_validation = grep("^left", validation_list, value = TRUE)
+marvin_validation = grep("^marvin", validation_list, value = TRUE)
+nine_validation = grep("^nine", validation_list, value = TRUE)
+no_validation = grep("^no", validation_list, value = TRUE)
+off_validation = grep("^off", validation_list, value = TRUE)
+on_validation = grep("^on", validation_list, value = TRUE)
+one_validation = grep("^one", validation_list, value = TRUE)
+right_validation = grep("^right", validation_list, value = TRUE)
+seven_validation = grep("^seven", validation_list, value = TRUE)
+sheila_validation = grep("^sheila", validation_list, value = TRUE)
+six_validation = grep("^six", validation_list, value = TRUE)
+stop_validation = grep("^stop", validation_list, value = TRUE)
+three_validation = grep("^three", validation_list, value = TRUE)
+tree_validation = grep("^tree", validation_list, value = TRUE)
+two_validation = grep("^two", validation_list, value = TRUE)
+up_validation = grep("^up", validation_list, value = TRUE)
+wow_validation = grep("^wow", validation_list, value = TRUE)
+yes_validation = grep("^yes", validation_list, value = TRUE)
+zero_validation = grep("^zero", validation_list, value = TRUE)
+
+validation_words = c(bed_validation,bird_validation, cat_validation, dog_validation, down_validation, eight_validation, five_validation, four_validation, go_validation, happy_validation, house_validation, left_validation, marvin_validation, nine_validation, no_validation, off_validation, on_validation,one_validation  ,right_validation,seven_validation, sheila_validation,six_validation,stop_validation, three_validation, tree_validation, two_validation,up_validation,wow_validation,yes_validation, zero_validation)
+
+validation_labels = c(rep(1, length(bed_validation)), rep(2, length(bird_validation)), rep(3, length(cat_validation)), rep(4, length(dog_validation)), rep(5, length(down_validation)), rep(6, length(eight_validation)), rep(7, length(five_validation)), rep(8, length(four_validation)), rep(9, length(go_validation)), rep(10, length(happy_validation)), rep(11, length(house_validation)), rep(12, length(left_validation)), rep(13, length(marvin_validation)), rep(14, length(nine_validation)), rep(15, length(no_validation)), rep(16, length(off_validation)), rep(17, length(on_validation)), rep(18, length(one_validation)), rep(19, length(right_validation)), rep(20, length(seven_validation)), rep(21, length(sheila_validation)), rep(22, length(six_validation)), rep(23, length(stop_validation)), rep(24, length(three_validation)), rep(25, length(tree_validation)), rep(26, length(two_validation)), rep(27, length(up_validation)), rep(28, length(wow_validation)), rep(29, length(yes_validation)), rep(30, length(zero_validation)))
+
+validation_data = array(dim = c(7028, 198, 40))
+validation_data2 = array(dim = c(7028, 198, 40))
+```
+
+
+```{r, echo = T, eval = F}
+# Code to generate spectrographs
+snd = rep(0, 16000)
+for (i in bed_train){
+  fin = file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "audio", i)
+  # read in audio file
+
+  data = readWave(fin)
+  #data = data + temp
+
+  # extract signal
+  temp = data@left
+
+  snd = snd + temp
+
+}
+
+# determine duration
+dur = length(snd)/data@samp.rate
+
+# determine sample rate
+fs = data@samp.rate
+
+start = which(snd > 0.1)[1]
+end = length(snd) - which(rev(snd) > 0.1)[1]
+
+snd = snd[start:end]
+  
+t = seq(1,16000, length.out = length(snd)) #upsampling
+f <- approxfun(t, snd)
+snd = f(seq(1,16000,1))
+
+# demean to remove offset
+snd = snd - mean(snd)
+
+# plot waveform
+plot(snd, type = 'l', xlab = 'Samples', ylab = 'Amplitude')
+
+# number of points to use for the fft
+nfft=160
+
+# window size (in points)
+window=160
+
+# overlap (in points)
+overlap=80
+
+# create spectrogram
+spec = specgram(x = snd,
+                n = nfft,
+                Fs = fs,
+                window = window,
+                overlap = overlap
+)
+
+
+# discard phase information
+S = abs(spec$S)
+
+# normalize
+S = S/max(S)
+
+# convert to dB
+S = 20*log10(S)
+
+# clip below -40 dB
+S[S < -40] <- -40
+
+# clip above -3 dB
+S[S > -3] <- -3      
+
+# config time axis
+t = spec$t
+
+# plot spectrogram
+# imagep(x = spec$t,
+#        y = spec$f[1:40],
+#        z = t(S)[,1:40],
+#        col = oce.colorsViridis,
+#        ylab = 'Frequency [Hz]',
+#        xlab = 'Time [s]',
+#        drawPalette = T,
+#        decimate = F
+# )
+```
+
+```{r, echo = T, eval = F}
+### Penalized spectrograms
+
+tfridge1 <- function(freqtimemat, ridges = 1, cost = 2, distmetric = 2){
+    
+  ridgepos = freqtimemat
+  columns = 1:ncol(freqtimemat)
+  rows = matrix(data = 0, nrow = ridges, ncol = ncol(freqtimemat))
+  
+  for (i in 2:ncol(freqtimemat)){
+    for (j in 1:nrow(freqtimemat)){
+      values = c()
+      for (k in 1:nrow(freqtimemat)){
+        values = c(values, freqtimemat[k, i-1] + cost*((abs(j-k)^distmetric)))
+      }
+      freqtimemat[j, i] = min(values) + freqtimemat[j, i]
+      ridgepos[j, i] = which.min(values)
+    }
+  }
+  
+  colnames(freqtimemat) <- NULL
+  return(freqtimemat)
+}
+```
+
+```{r, echo = T, eval = F}
+### extraction of maximum-energy ridge using a penalized forward-backward greedy algorithm
+
+tfridge2 <- function(freqtimemat, ridges = 1, cost = 2, distmetric = 2){
+    
+  ridgepos = freqtimemat
+  columns = 1:ncol(freqtimemat)
+  rows = matrix(data = 0, nrow = ridges, ncol = ncol(freqtimemat))
+  
+  for (i in 2:ncol(freqtimemat)){
+    for (j in 1:nrow(freqtimemat)){
+      values = c()
+      for (k in 1:nrow(freqtimemat)){
+        values = c(values, freqtimemat[k, i-1] + cost*((abs(j-k)^distmetric)))
+      }
+      freqtimemat[j, i] = min(values) + freqtimemat[j, i]
+      ridgepos[j, i] = which.min(values)
+    }
+  }
+  
+  
+  for (i in 1:ridges){
+    start_ridges = sort(which(freqtimemat[,ncol(freqtimemat)]==min(ncol(freqtimemat))), decreasing = T)[1:i]
+    
+  }
+  
+  
+  # for (i in 1:ridges){
+  #   rows[i, ncol(freqtimemat)] = which(freqtimemat[,ncol(freqtimemat)] == sort(freqtimemat[,ncol(freqtimemat)])[i])[1]
+  # }
+  # 
+  # for (i in 1:(ncol(freqtimemat)-1)){
+  #    for (j in 1:ridges){
+  #       
+  #       backtrack_val = ridgepos[rows[j, ncol(freqtimemat) - i + 1], ncol(freqtimemat) - i]
+  #       
+  #       if (j > 2){
+  #         
+  #       #if(backtrack_val == rows[j-1, ncol(freqtimemat) - i]){
+  #       if(backtrack_val %in% rows[, ncol(freqtimemat) - i]){
+  #         rows[j, ncol(freqtimemat) - i] = rows[j, ncol(freqtimemat) - i + 1]
+  #         
+  #       }
+  #       
+  #       else{
+  #         rows[j, ncol(freqtimemat) - i] = backtrack_val
+  #       }
+  #     }
+  #       # rows[j, ncol(freqtimemat) - i] = ridgepos[rows[j, ncol(freqtimemat) - i + 1], ncol(freqtimemat) - i]
+  #    }
+  #  }
+  # 
+  freqtimemat2 = matrix(data = 0, ncol = ncol(freqtimemat), nrow = nrow(freqtimemat))
+  # 
+  #  for (i in 1:ncol(freqtimemat)) {
+  #    for (j in 1:ridges){
+  #       freqtimemat2[rows[j,i], columns[i]] = freqtimemat[rows[j,i], columns[i]] + 1
+  #    }
+  # }
+  colnames(ridgepos) <- NULL
+  return(ridgepos)
+  # return(rows)
+}
+```
+
+
+```{r, echo = T, eval = F}
+for (i in 1:length(train_words)){ 
+  fin = file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "audio", train_words[i])
+  
+  # read in audio file
+  data = readWave(fin)
+  # extract signal
+  snd = data@left
+  # determine sample rate
+  fs = data@samp.rate
+  # demean to remove DC offset
+  snd = (snd - mean(snd))
+
+  
+  snd = snd/max(snd)
+  
+  start = which(snd > 0.1)[1]
+  end = length(snd) - which(rev(snd) > 0.1)[1]
+
+  snd = snd[start:end]
+  
+  t = seq(1,16000, length.out = length(snd)) #upsampling
+  f <- approxfun(t, snd)
+  snd = f(seq(1,16000,1))
+  
+# number of points to use for the fft
+nfft=160
+
+# window size (in points)
+window=160
+
+# overlap (in points)
+overlap=80
+
+# create spectrogram
+spec = specgram(x = snd,
+                n = nfft,
+                Fs = fs,
+                window = window,
+                overlap = overlap
+)
+
+
+# discard phase information
+S = abs(spec$S)
+
+# normalize
+S = S/max(S)
+
+# convert to dB
+S = 20*log10(S)
+
+# clip below -40 dB
+S[S < -40] <- -40
+
+# clip above -3 dB
+S[S > -3] <- -3      
+
+S = (S+40)/37
+
+# config time axis
+t = spec$t
+
+train_data[i,,] = t(S)[,1:40]
+}
+```
+
+```{r, eval = F, echo =T}
+
+for (i in 1:length(validation_words)){ 
+  fin = file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "audio", validation_words[i])
+  
+  # read in audio file
+  data = readWave(fin)
+  # extract signal
+  snd = data@left
+  # determine sample rate
+  fs = data@samp.rate
+  # demean to remove DC offset
+  snd = (snd - mean(snd))
+
+  
+  snd = snd/max(snd)
+  
+  start = which(snd > 0.1)[1]
+  end = length(snd) - which(rev(snd) > 0.1)[1]
+
+  snd = snd[start:end]
+  
+  t = seq(1,16000, length.out = length(snd)) #upsampling
+  f <- approxfun(t, snd)
+  snd = f(seq(1,16000,1))
+  
+# number of points to use for the fft
+nfft=160
+
+# window size (in points)
+window=160
+
+# overlap (in points)
+overlap=80
+
+# create spectrogram
+spec = specgram(x = snd,
+                n = nfft,
+                Fs = fs,
+                window = window,
+                overlap = overlap
+)
+
+
+# discard phase information
+S = abs(spec$S)
+
+# normalize
+S = S/max(S)
+
+# convert to dB
+S = 20*log10(S)
+
+# clip below -40 dB
+S[S < -40] <- -40
+
+# clip above -3 dB
+S[S > -3] <- -3      
+
+S = (S+40)/37
+
+
+# config time axis
+t = spec$t
+
+validation_data[i,,] = t(S)[,1:40]
+}
+
+```
+
+```{r, eval = F, echo = T}
+for (i in 1:length(train_words)){
+  train_data2[i,,] = tfridge(train_data[i,,], ridges = 1, cost = 2, distmetric = 2)
+}
+for (i in 1:length(validation_words)){
+  validation_data2[i,,] = tfridge(validation_data[i,,], ridges = 1, cost = 2, distmetric = 2)  
+}
+
+```
+
+
+```{r,eval = F, echo = T}
+network <- keras_model_sequential() %>% 
+  layer_dense(units = 198*40, activation = "relu", input_shape = c(198*40)) %>%
+  layer_dense(units = 1024, activation = "relu") %>%
+  layer_dense(units = 512, activation = "relu") %>%
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dense(units = 31, activation = "softmax")
+```
+
+```{r, eval = F, echo = T}
+network %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+```{r, eval = F, echo= T}
+train_data_new <- array_reshape(train_data, c(7083, 198*40))
+train_labels_new = to_categorical(train_labels)
+validation_data_new <- array_reshape(validation_data, c(7028, 198*40))
+validation_labels_new = to_categorical(validation_labels)
+```
+
+```{r, eval = F, message=F, echo = T}
+history <- network %>% fit(
+  train_data_new,
+  train_labels_new,
+  epochs = 500,
+  batch_size = 7083,
+  validation_data = list(validation_data_new, validation_labels_new)
+)
+```
+
+```{r, eval = F, echo = T}
+history2 <- network %>% fit(
+  train_data_new2,
+  train_labels_new2,
+  epochs = 500,
+  batch_size = 7083,
+  validation_data = list(validation_data_new2, validation_labels_new2)
+)
+```
+
+```{r}
+# bed_train_data = array(dim = c(176, 123, 128))
+# 
+# for (i in 1:(length(bed_train)-136)){
+#   fin = file.path("c:", "Users", "Meera Dugar", "Desktop", "Research", "Speech", "train", "audio", bed_train[i])
+# 
+#   # read in audio file
+#   data = readWave(fin)
+#   # extract signal
+#   snd = data@left
+#   # determine sample rate
+#   fs = data@samp.rate
+#   # demean to remove DC offset
+#   snd = (snd - mean(snd))
+# 
+#   snd = preemphasis(snd, f = fs, alpha = 0.97)
+# 
+#   snd = snd/max(snd)
+# 
+#   start = which(snd > 0.1)[1]
+#   end = length(snd) - which(rev(snd) > 0.1)[1]
+# 
+#   snd = snd[start:end]
+# 
+#   t = seq(1,16000, length.out = length(snd))
+#   f <- approxfun(t, snd)
+#   snd = f(seq(1,16000,1))
+# 
+#   #plot(snd, type = "l", col = "red")
+# 
+# # number of points to use for the fft
+# nfft=1024
+# 
+# # window size (in points)
+# window=256
+# 
+# # overlap (in points)
+# overlap=128
+# 
+# # create spectrogram
+# spec = specgram(x = snd,
+#                 n = nfft,
+#                 Fs = fs,
+#                 window = window,
+#                 overlap = overlap
+# )
+# 
+# # frequency in range 0<f<=4000 Hz.
+# spec$f = spec$f[1:128]
+# 
+# # discard phase information
+# P = abs(spec$S)
+# 
+# # normalize
+# P = P/max(P)
+# 
+# # convert to dB
+# P = 10*log10(P)
+# 
+# P[P < -17] <- -17  # clip below -40 dB.
+# P[P > -3] <- -3      # clip above -3 dB.
+# 
+# P = (P+17)/14 # Min-Max Normalization for the Neural Network
+# 
+# bed_train_data[i,,] = t(P)[,1:128]
+# # plot spectrogram
+# 
+# # imagep(x = t,
+# #        y = spec$f,
+# #        z = t(P),
+# #        col = oce.colorsViridis,
+# #
+# #        ylab = 'Frequency [Hz]',
+# #        xlab = 'Time [s]',
+# #        drawPalette = T,
+# #        decimate = F
+# # )
+# 
+# #plot(abs(fft(snd))[1:8000], type = "l")
+# 
+# imagep(x = spec$t,
+#        y = spec$f,
+#        z = t(tfridge(P[1:128,], ridges = 30, cost = 2, distmetric = 1.5)),
+#        #col = oce.colorsViridis,
+#        ylab = 'Frequency [Hz]',
+#        xlab = 'Time [s]',
+#        drawPalette = T,
+#        decimate = F
+# )
+# 
+# }
+# 
+
+
+```
+
+
+```{r}
+# bed_ridge_data = bed_train_data
+# 
+# 
+# for (i in 1:176){
+#   for (j in 1:123){
+#     for (k in 1:128){
+#       bed_ridge_data[i, j, k] = ifelse(bed_ridge_data[i, j, k] < max(bed_ridge_data[i,j,])/2, 0, bed_ridge_data[i, j, k])
+#       
+#     }
+#   }
+# }
+# for (i in 1:60){
+#        imagep(x = spec$t,
+#        y = spec$f,
+#        z = bed_ridge_data[i,,],
+#        col = oce.colorsViridis,
+#        ylab = 'Frequency [Hz]',
+#        xlab = 'Time [s]',
+#        drawPalette = T,
+#        decimate = F
+# )  
+# }
+
+```
+
+# References
+
+[1] Becker, R. A., Chambers, J. M. and Wilks, A. R. (1988) The New S Language. Wadsworth & Brooks/Cole.
+  Hinton, Geoffrey. "Overview of mini-batch gradient descent" (PDF). pp. 27–29. Retrieved 27 September 2016.
+
+[2] In Wireless Engineer (also called Experimental Wireless and the Wireless Engineer), vol. 7, 1930, pp. 536–541 – "On the Theory of Filter Amplifiers", S. Butterworth
+
+[3]  Titze, I.R. (1994). Principles of Voice Production, Prentice Hall, ISBN 978-0-13-717893-3.
+
+[4] Daubechies, I., J. Lu, and H.-T. Wu. "Synchrosqueezed wavelet transforms: an empirical mode decomposition-like tool." Applied and Computational Harmonic Analysis. Vol. 30, Number 2, 2011, pp. 243–261.
+
+[5] Thakur, G., E. Brevdo, N. S. Fučkar, and H.-T. Wu. "The Synchrosqueezing algorithm for time-varying spectral analysis: Robustness properties and new paleoclimate applications." Signal Processing. Vol. 93, Number 4, 2013, pp. 1079–1094.
+
